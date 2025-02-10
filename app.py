@@ -1,6 +1,7 @@
 import logging
 import requests
 import colorama
+import time
 from colorama import Fore, Style
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, CallbackContext
@@ -46,58 +47,30 @@ KODE_BANKS = {
     "sakuku": "99000"
 }
 
-# 🔹 Daftar e-Wallet yang didukung
-EWALLET_SERVICES = {
-    "dana": "dana",
-    "ovo": "ovo",
-    "gopay": "gopay",
-    "shopeepay": "shopeepay",
-    "linkaja": "linkaja",
-    "sea": "sea",
-    "bluebca": "bluebca",
-    "sakuku": "sakuku"
-}
-
 # 🔹 Logging (Untuk Debugging)
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 # 🔹 Fungsi untuk mengecek rekening bank via API
 def cek_rekening(kode_bank, nomor_rekening):
     params = {"kodeBank": kode_bank, "noRekening": nomor_rekening}
     try:
-        response = requests.get(API_BANK_URL, headers=API_BANK_HEADERS, params=params)
+        response = requests.get(API_BANK_URL, headers=API_BANK_HEADERS, params=params, timeout=10)
         data = response.json()
         if response.status_code == 200 and "data" in data and "nama" in data["data"]:
             return data["data"]["nama"]
         else:
             return None  # Jika rekening tidak ditemukan
-    except:
+    except requests.exceptions.RequestException as e:
+        logging.error(f"❌ API Error: {e}")
         return None  # Jika terjadi kesalahan
-
-# 🔹 Fungsi untuk mengecek e-Wallet via API
-def cek_ewallet(ewallet, nomor_hp):
-    endpoint = f"/cek_ewallet/{nomor_hp}/{ewallet}"
-    try:
-        response = requests.get(API_EWALLET_URL + endpoint, headers=API_EWALLET_HEADERS, timeout=10)
-        data = response.json()
-        if response.status_code == 200 and "data" in data:
-            return data["data"]["name"]
-        else:
-            return None
-    except:
-        return None
 
 # 🔹 Fungsi saat pengguna mengetik /start
 async def start(update: Update, context: CallbackContext):
     await update.message.reply_text(
-        "✅ Selamat datang di *BANK & E-WALLET CHECK BOT*!\n\n"
+        "✅ Selamat datang di *BANK CHECK BOT*!\n\n"
         "🔹 Ketik `<nama_bank> <nomor_rekening>` atau `<nomor_rekening> <nama_bank>` untuk validasi rekening.\n"
-        "🔹 Ketik `<nama_ewallet> <nomor_hp>` atau `<nomor_hp> <nama_ewallet>` untuk validasi e-Wallet.\n"
-        "🔹 Ketik `/list` untuk melihat daftar kode bank & e-Wallet.\n\n"
-        "*Contoh:* `bca 8060127426` atau `8060127426 bca`\n"
-        "*Contoh:* `shopeepay 081357645086` atau `081357645086 shopeepay`",
+        "🔹 Ketik `/list` untuk melihat daftar kode bank.\n\n"
+        "*Contoh:* `bca 8060127426` atau `8060127426 bca`",
         parse_mode="Markdown"
     )
 
@@ -107,19 +80,17 @@ async def handle_message(update: Update, context: CallbackContext):
         text = update.message.text.strip().lower()  # Ambil teks dari pengguna
         words = text.split()  # Pecah pesan berdasarkan spasi
 
-        # Memastikan format pesan valid (harus ada 2 kata: bank/eWallet + nomor)
+        # Memastikan format pesan valid (harus ada 2 kata)
         if len(words) != 2:
             return
 
         layanan_1, layanan_2 = words  # Ambil kedua kata input
 
-        # **Menyesuaikan input dengan dua format**
+        # **Cek Rekening Bank**
         if layanan_1 in KODE_BANKS and layanan_2.isdigit():
-            # **Format: bca 8060127426**
             kode_bank = KODE_BANKS[layanan_1]
             nomor = layanan_2
         elif layanan_2 in KODE_BANKS and layanan_1.isdigit():
-            # **Format: 8060127426 bca**
             kode_bank = KODE_BANKS[layanan_2]
             nomor = layanan_1
         else:
@@ -139,40 +110,22 @@ async def handle_message(update: Update, context: CallbackContext):
                 await update.message.reply_text("⚠️ Rekening tidak ditemukan atau tidak valid.", parse_mode="Markdown")
             return
 
-        # **Cek e-Wallet dengan dua format**
-        if layanan_1 in EWALLET_SERVICES and layanan_2.isdigit():
-            ewallet = EWALLET_SERVICES[layanan_1]
-            nomor = layanan_2
-        elif layanan_2 in EWALLET_SERVICES and layanan_1.isdigit():
-            ewallet = EWALLET_SERVICES[layanan_2]
-            nomor = layanan_1
-        else:
-            ewallet = None
+    except Exception as e:
+        logging.error(f"❌ Terjadi kesalahan: {e}")
 
-        if ewallet:
-            nama_pemilik = cek_ewallet(ewallet, nomor)
-            if nama_pemilik:
-                await update.message.reply_text(
-                    f"✅ *E-WALLET CHECK*\n\n"
-                    f"📱 Layanan: *{layanan_1.upper()}*\n"
-                    f"📞 Nomor HP: `{nomor}`\n"
-                    f"👤 Nama Pemilik: *{nama_pemilik}*",
-                    parse_mode="Markdown"
-                )
-            else:
-                await update.message.reply_text("", parse_mode="Markdown")
-
-    except:
-        return
-
-# 🔹 Menjalankan bot Telegram
+# 🔹 Menjalankan bot Telegram dalam loop (agar otomatis restart jika crash)
 def main():
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print(Fore.GREEN + "🚀 BOT TELEGRAM SEDANG BERJALAN...")
-    app.run_polling()
+    while True:
+        try:
+            app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+            app.add_handler(CommandHandler("start", start))
+            app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+            
+            print(Fore.GREEN + "🚀 BOT TELEGRAM SEDANG BERJALAN...")
+            app.run_polling()
+        except Exception as e:
+            logging.error(f"❌ BOT TERHENTI: {e}")
+            time.sleep(10)  # Tunggu 10 detik sebelum restart
 
 # 🔹 Jalankan bot
 if __name__ == "__main__":
